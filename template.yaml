@@ -1,0 +1,420 @@
+Description: Basic live streaming platform with RTMP ingest and HTTP(S) HLS output
+
+Parameters:
+  InstanceType:
+    Description: Instance type of Nginx-RTMP server
+    Type: String
+    Default: t3.nano
+    AllowedValues: [t3.nano, t3.micro, t3.small, t3.medium, t3.large, t3.xlarge, t3.2xlarge]
+
+  AvailableOverHTTP:
+    Description: If 'yes', HLS streaming will be available over HTTP
+    Type: String
+    Default: "yes"
+    AllowedValues: ["yes", "no"]
+  AvailableOverHTTPS:
+    Description: If 'yes', HLS streaming will be available over HTTPS
+    Type: String
+    Default: "no"
+    AllowedValues: ["yes", "no"]
+  SSLCertificate:
+    Description: SSL Certificate for HTTPS (in PEM format)
+    Type: String
+  SSLPrivateKey:
+    Description: Private key for HTTPS (in PEM format)
+    Type: String
+  HTTPSDomain:
+    Description: Domain name for HTTPS (i.e. 'my.example.com')
+    Type: String
+
+
+Mappings: 
+  AmiByRegion: 
+    ap-east-1: 
+      "ami": "ami-d26218a3"
+    ap-northeast-1: 
+      "ami": "ami-0d5db3e2a1b98ca94"
+    ap-south-1: 
+      "ami": "ami-0237472cf337d9529"
+    ap-southeast-1: 
+      "ami": "ami-0c199cae95cea87f0"
+    ca-central-1: 
+      "ami": "ami-0dbe45195223e250b"
+    eu-central-1: 
+      "ami": "ami-040a1551f9c9d11ad"
+    eu-north-1: 
+      "ami": "ami-0567220a328fe4fee"
+    eu-west-1: 
+      "ami": "ami-0e41581acd7dedd99"
+    me-south-1: 
+      "ami": "ami-0a7794ed517908686"
+    sa-east-1: 
+      "ami": "ami-0065a65613972a22a"
+    us-east-1: 
+      "ami": "ami-0d5ae5525eb033d0a"
+    us-west-1: 
+      "ami": "ami-00a3e4424e9ab3e56"
+    cn-north-1: 
+      "ami": "ami-01993b4213b4bffb5"
+    cn-northwest-1: 
+      "ami": "ami-01d4e30d4d4952d0f"
+    us-gov-west-1: 
+      "ami": "ami-a76736c6"
+    us-gov-east-1: 
+      "ami": "ami-64a84b15"
+    ap-northeast-2: 
+      "ami": "ami-0f4362c71ffaf7759"
+    ap-southeast-2: 
+      "ami": "ami-0c0483bc96aef8b2f"
+    eu-west-2: 
+      "ami": "ami-00f94dc949fea2adf"
+    us-east-2: 
+      "ami": "ami-0a7f2b5b6b87eaa1b"
+    us-west-2: 
+      "ami": "ami-09c6723c6c24250c9"
+    ap-northeast-3: 
+      "ami": "ami-07672d9af3947230d"
+    eu-west-3: 
+      "ami": "ami-0df03c7641cf41947"
+
+Conditions: 
+  HasHttp: !Equals [ !Ref AvailableOverHTTP, "yes" ]
+  HasHttps: !Equals [ !Ref AvailableOverHTTPS, "yes" ]
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        -
+          PolicyName: !Sub "${AWS::StackName}-LambdaRolePolicy"
+          PolicyDocument:
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !Join ["", ["arn:aws:iam::", Ref: "AWS::AccountId", ":role/*"]]
+              -
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Join ["", ["arn:aws:logs:", Ref: "AWS::Region", ":", Ref: "AWS::AccountId", ":log-group:/aws/lambda/*"]]
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.109.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+      - Key: Name
+        Value:  !Join ['', [!Ref "AWS::StackName", "-VPC" ]]
+   
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPC
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.109.10.0/24
+      MapPublicIpOnLaunch : true
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      Tags:
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-Public
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value:  !Sub ${AWS::StackName}-Public
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway  
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allows ssh, rtmp and http/s connections to host
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 1935
+        ToPort: 1935
+        CidrIp: 0.0.0.0/0
+
+  ParsedCertificate:
+    Type: "Custom::LoadLambda"
+    Properties:
+      ServiceToken: !GetAtt ParseCertificateFunction.Arn
+      Input: 
+        Ref: SSLCertificate
+      Resource: "EndPoint"
+
+  ParsedKey:
+    Type: "Custom::LoadLambda"
+    Properties:
+      ServiceToken: !GetAtt ParseCertificateFunction.Arn
+      Input: 
+        Ref: SSLPrivateKey
+      Resource: "EndPoint"
+
+  ParseCertificateFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-ParseCertificate
+      Description: Properly formats PEM key and certificates for use with Nginx
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          var response = require('cfn-response');
+          exports.handler = (event, context) => {
+            console.log('REQUEST:: ', JSON.stringify(event, null, 2));
+            
+            var input = event.ResourceProperties.Input;
+            let output = input.split("---- ").join("----\n");
+            output = output.split(" ----").join("\n----");
+            output = output.split(" ").join("");
+            output = output.split("CERTIFICATE").join(" CERTIFICATE");
+            output = output.split("RSAPRIVATEKEY").join(" RSA PRIVATE KEY");
+
+
+            var responseData = {
+              Output: output
+            };
+            console.log("responseData: ", responseData);
+            response.send(event, context, response.SUCCESS, responseData);
+          };
+
+      Runtime:  nodejs8.10
+      Timeout: 30
+
+  NginxConf:
+    Type: "Custom::LoadLambda"
+    Properties:
+      ServiceToken: !GetAtt NginxConfFunction.Arn
+      HasHttp: 
+        Ref: AvailableOverHTTP
+      HasHttps: 
+        Ref: AvailableOverHTTPS
+      Resource: "EndPoint"
+
+  NginxConfFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-NginxConf
+      Description: Generates a specific Nginx Configuration
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: |
+          var confPrefix = "\
+            worker_processes  auto;\\n\
+            events {\\n\
+                worker_connections  1024;\\n\
+            }\\n\
+            \\n\
+            # RTMP configuration\\n\
+            rtmp {\\n\
+                server {\\n\
+                    listen 1935; # Listen on standard RTMP port\\n\
+                    chunk_size 4000;\\n\
+                    application live {\\n\
+                        live on;\\n\
+                        hls on;\\n\
+                        hls_path /mnt/hls/;\\n\
+                        hls_fragment 3;\\n\
+                        hls_playlist_length 60;\\n\
+                        deny play all;\\n\
+                    }\\n\
+                }\\n\
+            }\\n\
+            \\n\
+            http {\\n\
+                sendfile off;\\n\
+                tcp_nopush on;\\n\
+                directio 512;\\n\
+                default_type application/octet-stream;\\n\
+          ";
+          var httpBlock = "\
+                server {\\n\
+                    listen 80;\\n\
+                    location / {\\n\
+                        add_header 'Cache-Control' 'no-cache';\\n\
+                        add_header 'Access-Control-Allow-Origin' '*' always;\\n\
+                        add_header 'Access-Control-Expose-Headers' 'Content-Length';\\n\
+                        if (\\$request_method = 'OPTIONS') {\\n\
+                            add_header 'Access-Control-Allow-Origin' '*';\\n\
+                            add_header 'Access-Control-Max-Age' 1728000;\\n\
+                            add_header 'Content-Type' 'text/plain charset=UTF-8';\\n\
+                            add_header 'Content-Length' 0;\\n\
+                            return 204;\\n\
+                        }\\n\
+                        types {\\n\
+                            application/dash+xml mpd;\\n\
+                            application/vnd.apple.mpegurl m3u8;\\n\
+                            video/mp2t ts;\\n\
+                        }\\n\
+                        root /mnt/;\\n\
+                    }\\n\
+                }\\n\
+            ";
+
+          var httpsBlock = "\
+                server {\\n\
+                    listen 443 ssl;\\n\
+                    ssl_certificate      cert.pem;\\n\
+                    ssl_certificate_key  cert.key;\\n\
+                    ssl_session_cache    shared:SSL:1m;\\n\
+                    ssl_session_timeout  5m;\\n\
+                    ssl_ciphers  HIGH:!aNULL:!MD5;\\n\
+                    ssl_prefer_server_ciphers  on;\\n\
+                    location / {\\n\
+                        add_header 'Cache-Control' 'no-cache';\\n\
+                        add_header 'Access-Control-Allow-Origin' '*' always;\\n\
+                        add_header 'Access-Control-Expose-Headers' 'Content-Length';\\n\
+                        if (\\$request_method = 'OPTIONS') {\\n\
+                            add_header 'Access-Control-Allow-Origin' '*';\\n\
+                            add_header 'Access-Control-Max-Age' 1728000;\\n\
+                            add_header 'Content-Type' 'text/plain charset=UTF-8';\\n\
+                            add_header 'Content-Length' 0;\\n\
+                            return 204;\\n\
+                        }\\n\
+                        types {\\n\
+                            application/dash+xml mpd;\\n\
+                            application/vnd.apple.mpegurl m3u8;\\n\
+                            video/mp2t ts;\\n\
+                        }\\n\
+                        root /mnt/;\\n\
+                    }\\n\
+                }\\n\
+            ";
+
+          var confSuffix = "\
+            }\\n\
+          ";
+
+          var response = require('cfn-response');
+          exports.handler = (event, context) => {
+            console.log('REQUEST:: ', JSON.stringify(event, null, 2));
+            
+            var hasHttp = event.ResourceProperties.HasHttp == "yes";
+            var hasHttps = event.ResourceProperties.HasHttps == "yes";
+            let nginxConf= confPrefix;
+            if (hasHttp) nginxConf += httpBlock;
+            if (hasHttps) nginxConf += httpsBlock;
+            nginxConf += confSuffix;
+
+            var responseData = {
+              conf: nginxConf
+            };
+            console.log("responseData: ", responseData);
+            response.send(event, context, response.SUCCESS, responseData);
+          };
+
+      Runtime:  nodejs8.10
+      Timeout: 30
+
+  Server:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [AmiByRegion, !Ref "AWS::Region", "ami"]
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnet
+      KeyName: wpstream
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash -x
+          
+          git clone https://github.com/sergey-dryabzhinsky/nginx-rtmp-module.git
+          apt-get --assume-yes install build-essential libpcre3 libpcre3-dev libssl-dev zlib1g-dev
+          wget http://nginx.org/download/nginx-1.16.1.tar.gz
+          tar -xf nginx-1.16.1.tar.gz
+          cd nginx-1.16.1
+          ./configure --with-http_ssl_module --add-module=../nginx-rtmp-module
+          make -j 1
+          sudo make install
+          echo -e "${NginxConf.conf}" > /usr/local/nginx/conf/nginx.conf
+          echo "${ParsedCertificate.Output}" > /usr/local/nginx/conf/cert.pem
+          echo "${ParsedKey.Output}" > /usr/local/nginx/conf/cert.key
+          /usr/local/nginx/sbin/nginx
+
+          
+          
+      Tags: 
+        - 
+          Key: "Name"
+          Value: !Sub "${AWS::StackName}-Server"
+
+Outputs:
+  IngressEndpoint:
+    Description: RTMP URL to publish to
+    Value: !Sub 
+      - rtmp://${publicIp}/live/stream001
+      - { publicIp: !GetAtt Server.PublicIp }
+  HTTPEgressEndpoint:
+    Description: HTTP URL for playback
+    Condition: HasHttp
+    Value: !Sub 
+      - http://${publicIp}/hls/stream001.m3u8
+      - { publicIp: !GetAtt Server.PublicIp }
+  HTTPSEgressEndpoint:
+    Description: HTTPS URL for playback
+    Condition: HasHttps
+    Value: !Sub 
+      - https://${httpsDomain}/hls/stream001.m3u8
+      - { httpsDomain: !Ref HTTPSDomain }
+  ServerIP:
+    Description: HTTP URL for playback
+    Condition: HasHttps
+    Value: !GetAtt Server.PublicIp

@@ -234,7 +234,7 @@ Resources:
             response.send(event, context, response.SUCCESS, responseData);
           };
 
-      Runtime:  nodejs8.10
+      Runtime:  nodejs12.x
       Timeout: 30
 
   NginxConf:
@@ -360,7 +360,7 @@ Resources:
             response.send(event, context, response.SUCCESS, responseData);
           };
 
-      Runtime:  nodejs8.10
+      Runtime:  nodejs12.x
       Timeout: 30
 
   Server:

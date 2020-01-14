@@ -376,6 +376,7 @@ Resources:
         "Fn::Base64": !Sub |
           #!/bin/bash -x
           
+          apt-get update
           git clone https://github.com/sergey-dryabzhinsky/nginx-rtmp-module.git
           apt-get --assume-yes install build-essential libpcre3 libpcre3-dev libssl-dev zlib1g-dev
           wget http://nginx.org/download/nginx-1.16.1.tar.gz

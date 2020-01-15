@@ -416,6 +416,6 @@ Outputs:
       - https://${httpsDomain}/hls/stream001.m3u8
       - { httpsDomain: !Ref HTTPSDomain }
   ServerIP:
-    Description: HTTP URL for playback
+    Description: Server IP address
     Condition: HasHttps
     Value: !GetAtt Server.PublicIp
